@@ -80,3 +80,172 @@ architecture-beta
     queue:L -- R:lambda 
     queue:B -- T:consumer
 ```
+
+Order Intake Service (owned)
+- API Gateway
+- Lambda (validation + idempotency + DB write + event publish)
+- DynamoDB (owned, stores orders + idempotency keys)
+
+External / Infrastructure
+- EventBridge (or SNS) — publishes events for downstream consumers
+- Downstream consumers (out of scope)
+
+### Key Decisions
+
+| Decision | Rationale |
+| -------- | --------- |
+| Idempotency via payload hash | Avoid trusting client keys; protect against duplicates |
+| Validate only local rules | Keep API decoupled; downstream handles full business validation |
+| Event publication part of acceptance | Ensures “no order lost” guarantee |
+| Best-effort downstream | Downstream failures do not block intake service; system isolated |
+| Direct publish (no outbox) | Simple for *day one*, high throughput handled by Lambda scaling |
+
+### High-level flow
+
+1. Client -> API Gateway
+    - Receives HTTP reuest
+3. Lambda
+    - Local validation
+    - Generate payload hash -> for idempotency
+    - Conditional write to DynamoDB
+    - Publish event
+3. Response
+      - 200 if: validated, written to DB and published
+      - 400 if: validation fails
+      - 500 if: any failure occurs
+4. Client retry if 500
+
+```mermaid
+sequenceDiagram
+    participant client
+    participant API Gateway
+    participant Lambda
+    participant DynamoDB
+    participant External
+
+    client->>API Gateway: http request
+    API Gateway->>Lambda: Triggers
+    Lambda->>Lambda: Validate request
+    Lambda->>DynamoDB: Idempotency check
+    Lambda->>DynamoDB: Write order
+    Lambda->>External: Publish event
+    Lambda->>API Gateway: returns
+    API Gateway->>client: http response
+```
+
+## Decision log
+
+### Service scope boundary
+
+**Decision:**
+
+Order Intake Service responsibility ends after:
+- Validation
+- Persistence
+- Event publication
+
+**Rationale:**
+
+- Clear bounded context
+- Decouples intake from business processing
+- Reduces blast radius
+
+**Trade-off:**
+
+Some accepted orders may later fail in downstream systems.
+
+### Validation scope
+
+**Decision:**
+
+Only structural and local business validation performed. No cross-service validation (e.g., product existence).
+
+**Rationale:**
+
+- Avoid synchronous dependencies
+- Maintain high availability
+- Reduce latency
+
+**Trade-off:**
+
+Invalid business orders may pass intake and fail later.
+
+### Idempotency strategy
+
+**Decision:**
+
+Use payload hash as idempotency key with 15-second TTL.
+
+**Rationale:**
+
+- Do not trust client-provided keys
+- Protect against retries
+- Simpler client contract
+
+**Trade-off:**
+
+Identical legitimate orders within TTL are treated as duplicates.
+
+### Persistence owenership
+
+**Decision:**
+
+DynamoDB table fully owned by Order Intake Service.
+
+**Rationale:**
+
+- Strong data ownership
+- Independent schema evolution
+- Avoid cross-service coupling 
+
+**Trade-off:**
+
+Data duplication may exist across domains.
+
+### Persistence owenership
+
+**Decision:**
+
+DynamoDB table fully owned by Order Intake Service.
+
+**Rationale:**
+
+- Strong data ownership
+- Independent schema evolution
+- Avoid cross-service coupling 
+
+**Trade-off:**
+
+Data duplication may exist across domains.
+
+### Event publishing strategy
+
+**Decision:**
+
+Direct publish after successful DB write.
+
+**Rationale:**
+
+- Ensures “no accepted order is lost”
+- Keeps architecture simple (no outbox pattern yet)
+- Idempotency protects retries
+
+**Trade-off:**
+
+Small risk window if Lambda crashes after DB write but before publish.
+
+### Retry & Failure Handling
+
+**Decision:**
+
+Rely on client retry for transient failures.
+
+**Rationale:**
+
+- Keeps intake stateless
+- Avoids orchestration complexity
+- Acceptable within defined SLA
+
+**Trade-off:**
+
+Relies on well-behaved clients.
