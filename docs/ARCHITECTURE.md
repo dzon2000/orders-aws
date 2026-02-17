@@ -49,7 +49,7 @@ Order is validated when:
   - Constraint validation: max quantity is 100
   - No duplicate order ID exists (idempotency key)
 
-  **Duplication**
+**Duplication**
   
 Duplication is handled with idempotency key being a payload hash. The system will generate idempotency key defined as a hash of entire request. The duplicate order is defined as an order placed with the same payload within a TTL of 15 seconds.
 
